@@ -65,13 +65,15 @@ STATUS_PIPE_EMPTY simply means there's no data to be read. */
 		   || _s == STATUS_PIPE_NOT_AVAILABLE \
 		   || _s == STATUS_PIPE_BUSY; })
 
+static NO_COPY fifo_reader_id_t null_fr_id = { .winpid = 0, .fh = NULL };
+
 fhandler_fifo::fhandler_fifo ():
   fhandler_base (), read_ready (NULL), write_ready (NULL),
   cancel_evt (NULL), sync_thr (NULL), listening_evt (NULL),
   nhandlers (0), nconnected (0),
   reader (false), writer (false), duplexer (false),
   max_atomic_write (DEFAULT_PIPEBUFSIZE),
-  shmem_handle (NULL), shmem (NULL)
+  shmem_handle (NULL), shmem (NULL), me (null_fr_id)
 {
   pipe_name_buf[0] = L'\0';
   need_fork_fixup (true);
@@ -546,6 +548,8 @@ fhandler_fifo::open (int flags, mode_t)
 	goto err_close_listening_evt;
       if (!(sync_thr = create_event ()))
 	goto err_close_cancel_evt;
+      me.winpid = GetCurrentProcessId ();
+      me.fh = this;
       new cygthread (fifo_reader_thread, this, "fifo_reader", sync_thr);
 
       /* If we're a duplexer, we need a handle for writing. */
@@ -1070,6 +1074,7 @@ fhandler_fifo::dup (fhandler_base *child, int flags)
       reader_lock ();
       inc_nreaders ();
       reader_unlock ();
+      fhf->me.fh = fhf;
       new cygthread (fifo_reader_thread, fhf, "fifo_reader", fhf->sync_thr);
     }
   return 0;
@@ -1116,6 +1121,7 @@ fhandler_fifo::fixup_after_fork (HANDLE parent)
       reader_lock ();
       inc_nreaders ();
       reader_unlock ();
+      me.winpid = GetCurrentProcessId ();
       new cygthread (fifo_reader_thread, this, "fifo_reader", sync_thr);
     }
 }
@@ -1129,6 +1135,7 @@ fhandler_fifo::fixup_after_exec ()
       /* The child needs its own view of shared memory. */
       if (reopen_shmem () < 0)
 	api_fatal ("Can't reopen shared memory during exec, %E");
+      me.winpid = GetCurrentProcessId ();
       if (!(listening_evt = create_event ()))
 	api_fatal ("Can't create reader thread listening event during exec, %E");
       if (!(cancel_evt = create_event ()))
